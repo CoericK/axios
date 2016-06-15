@@ -2,6 +2,7 @@ var axios = require('../../../index');
 var http = require('http');
 var url = require('url');
 var zlib = require('zlib');
+var fs = require('fs');
 var server;
 
 module.exports = {
@@ -24,8 +25,8 @@ module.exports = {
         timeout: 250
       }).then(function (res) {
         success = true;
-      }).catch(function (res) {
-        error = res;
+      }).catch(function (err) {
+        error = err;
         failure = true;
       });
 
@@ -78,6 +79,41 @@ module.exports = {
     });
   },
 
+  testNoRedirect: function (test) {
+    server = http.createServer(function (req, res) {
+      res.setHeader('Location', '/foo');
+      res.statusCode = 302;
+      res.end();
+    }).listen(4444, function () {
+      axios.get('http://localhost:4444/', {
+        maxRedirects: 0,
+        validateStatus: function () {
+          return true;
+        }
+      }).then(function (res) {
+        test.equal(res.status, 302);
+        test.equal(res.headers['location'], '/foo');
+        test.done();
+      });
+    });
+  },
+
+  testMaxRedirects: function (test) {
+    var i = 1;
+    server = http.createServer(function (req, res) {
+      res.setHeader('Location', '/' + i);
+      res.statusCode = 302;
+      res.end();
+      i++;
+    }).listen(4444, function () {
+      axios.get('http://localhost:4444/', {
+        maxRedirects: 3
+      }).catch(function (error) {
+        test.done();
+      });
+    });
+  },
+
   testTransparentGunzip: function (test) {
     var data = {
       firstName: 'Fred',
@@ -101,6 +137,18 @@ module.exports = {
     });
   },
 
+  testGunzipErrorHandling: function (test) {
+    server = http.createServer(function (req, res) {
+      res.setHeader('Content-Type', 'application/json;charset=utf-8');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.end('invalid response');
+    }).listen(4444, function () {
+      axios.get('http://localhost:4444/').catch(function (error) {
+        test.done();
+      });
+    });
+  },
+
   testUTF8: function (test) {
     var str = Array(100000).join('ж');
 
@@ -111,6 +159,67 @@ module.exports = {
       axios.get('http://localhost:4444/').then(function (res) {
         test.equal(res.data, str);
         test.done();
+      });
+    });
+  },
+
+  testBasicAuth: function (test) {
+    server = http.createServer(function (req, res) {
+      res.end(req.headers.authorization);
+    }).listen(4444, function () {
+      var user = 'foo';
+      axios.get('http://' + user + '@localhost:4444/').then(function (res) {
+        var base64 = new Buffer(user + ':', 'utf8').toString('base64');
+        test.equal(res.data, 'Basic ' + base64);
+        test.done();
+      });
+    });
+  },
+
+  testMaxContentLength: function(test) {
+    var str = Array(100000).join('ж');
+
+    server = http.createServer(function (req, res) {
+      res.setHeader('Content-Type', 'text/html; charset=UTF-8');
+      res.end(str);
+    }).listen(4444, function () {
+      var success = false, failure = false, error;
+
+      axios.get('http://localhost:4444/', {
+        maxContentLength: 2000
+      }).then(function (res) {
+        success = true;
+      }).catch(function (err) {
+        error = err;
+        failure = true;
+      });
+
+      setTimeout(function () {
+        test.equal(success, false, 'request should not succeed');
+        test.equal(failure, true, 'request should fail');
+        test.equal(error.message, 'maxContentLength size of 2000 exceeded');
+        test.done();
+      }, 100);
+    });
+  },
+
+  testStream: function(test) {
+    server = http.createServer(function (req, res) {
+      req.pipe(res);
+    }).listen(4444, function () {
+      axios.post('http://localhost:4444/',
+        fs.createReadStream(__filename), {
+        responseType: 'stream'
+      }).then(function (res) {
+        var stream = res.data;
+        var string = '';
+        stream.on('data', function (chunk) {
+          string += chunk.toString('utf8');
+        });
+        stream.on('end', function () {
+          test.equal(string, fs.readFileSync(__filename, 'utf8'));
+          test.done();
+        });
       });
     });
   }
